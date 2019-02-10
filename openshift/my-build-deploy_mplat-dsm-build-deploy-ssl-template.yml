@@ -1,0 +1,291 @@
+kind: Template
+apiVersion: v1
+metadata:
+  name: mplat-dsm-build-deploy-ssl-template
+objects:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      service.alpha.openshift.io/serving-cert-secret-name: ${APPLICATION_NAME}-service-certs
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    ports:
+    - name: 8443-tcp
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+    selector:
+      deploymentconfig: ${APPLICATION_NAME}
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    replicas: 1
+    selector:
+      deploymentconfig: ${APPLICATION_NAME}
+    template:
+      metadata:
+        labels:
+          app: ${APPLICATION_NAME}
+          deploymentconfig: ${APPLICATION_NAME}
+      spec:
+        containers:
+        - name: ${APPLICATION_NAME}
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          env:
+            - name: JAVA_OPTIONS
+              value: -Djavax.net.ssl.trustStore=/var/run/secrets/java.io/keystores/truststore.jks -Djavax.net.ssl.trustStorePassword=changeit
+            - name: APP_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: keystore_jks
+              value: /var/run/secrets/java.io/keystores/keystore.jks
+            - name: password
+              value: changeit
+            - name: SPRING_CONFIG_LOCATION
+              value: "/dsf/config/dsm/,/dsf/config/system/"
+            - name: SPRING_PROFILES_ACTIVE
+              value: "${SPRING_PROFILES_ACTIVE}"
+            - name: SERVER_PORT
+              value: "8443"
+            - name: LOGGING_CONFIG
+              value: "${LOGGING_CONFIG}"
+            - name: LOGGING_LEVEL_ROOT
+              value: ${LOGGING_LEVEL_ROOT}
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: ${LIVELINESS_PROBE_PATH}
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            successThreshold: 1
+            timeoutSeconds: 5
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: ${READINESS_PROBE_PATH}
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            successThreshold: 1
+            timeoutSeconds: 5
+          ports:
+          - containerPort: 8443
+            protocol: TCP
+            name: 8443-tcp
+          - containerPort: 8778
+            protocol: TCP
+            name: jolokia
+          resources:
+            requests:
+              cpu: ${CPU_REQUEST}
+              memory: ${MEMORY_REQUEST}
+            limits:
+              cpu: ${CPU_LIMIT}
+              memory: ${MEMORY_LIMIT}
+          volumeMounts:
+            - name: keystore-volume
+              mountPath: /var/run/secrets/java.io/keystores
+            - name: ${APPLICATION_NAME}
+              mountPath: /dsf/config/dsm
+            - name: mplat-system
+              mountPath: /dsf/config/system
+        initContainers:
+        - name: pem-to-truststore
+          image: registry.access.redhat.com/redhat-sso-7/sso71-openshift:1.1-16
+          env:
+            - name: ca_bundle
+              value: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+            - name: truststore_jks
+              value: /var/run/secrets/java.io/keystores/truststore.jks
+            - name: password
+              value: changeit
+          command: ['/bin/bash']
+          args: ['-c', "keytool -importkeystore -srckeystore $JAVA_HOME/jre/lib/security/cacerts -srcstoretype JKS -destkeystore $truststore_jks -storepass changeit -srcstorepass changeit && csplit -z -f crt- $ca_bundle '/-----BEGIN CERTIFICATE-----/' '{*}' && for file in crt-*; do keytool -import -noprompt -keystore $truststore_jks -file $file -storepass changeit -alias service-$file; done"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 200m
+              memory: 400Mi
+          volumeMounts:
+            - name: keystore-volume
+              mountPath: /var/run/secrets/java.io/keystores
+            - name: service-certs
+              mountPath: /var/run/secrets/openshift.io/services_serving_certs
+        - name: pem-to-keystore
+          image: registry.access.redhat.com/redhat-sso-7/sso71-openshift:1.1-16
+          env:
+            - name: keyfile
+              value: /var/run/secrets/openshift.io/services_serving_certs/tls.key
+            - name: crtfile
+              value: /var/run/secrets/openshift.io/services_serving_certs/tls.crt
+            - name: keystore_pkcs12
+              value: /var/run/secrets/java.io/keystores/keystore.pkcs12
+            - name: keystore_jks
+              value: /var/run/secrets/java.io/keystores/keystore.jks
+            - name: password
+              value: changeit
+          command: ['/bin/bash']
+          args: ['-c', "openssl pkcs12 -export -inkey $keyfile -in $crtfile -out $keystore_pkcs12 -password pass:$password && keytool -importkeystore -noprompt -srckeystore $keystore_pkcs12 -srcstoretype pkcs12 -destkeystore $keystore_jks -storepass $password -srcstorepass $password"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 200m
+              memory: 400Mi
+          volumeMounts:
+            - name: keystore-volume
+              mountPath: /var/run/secrets/java.io/keystores
+            - name: service-certs
+              mountPath: /var/run/secrets/openshift.io/services_serving_certs
+        volumes:
+          - name: keystore-volume
+            emtpyDir: {}
+          - name: service-certs
+            secret:
+              secretName: ${APPLICATION_NAME}-service-certs
+          - name: ${APPLICATION_NAME}
+            configMap:
+              name: ${APPLICATION_NAME}
+          - name: mplat-system
+            configMap:
+              name: mplat-system
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - ${APPLICATION_NAME}
+        from:
+          kind: ImageStreamTag
+          name: "${APPLICATION_NAME}:latest"
+- apiVersion: v1
+  kind: Route
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    port:
+      targetPort: 8443-tcp
+    tls:
+      termination: reencrypt
+    to:
+      kind: Service
+      name: ${APPLICATION_NAME}
+      weight: 100
+    wildcardPolicy: None
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}-openjdk18
+    name: openjdk18-openshift
+  spec:
+    tags:
+    - from:
+        kind: DockerImage
+        name: registry.access.redhat.com/redhat-openjdk-18/openjdk18-openshift
+      generation: 1
+      importPolicy: {}
+      name: latest
+- kind: BuildConfig
+  apiVersion: v1
+  metadata:
+    name: ${APPLICATION_NAME}
+    labels:
+      app: ${APPLICATION_NAME}
+  spec:
+    triggers: []
+    source:
+      type: Binary
+      binary: {}
+    strategy:
+      type: Source
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: openjdk18-openshift:latest
+    output:
+      to:
+        kind: ImageStreamTag
+        name: "${APPLICATION_NAME}:latest"
+    resources:
+      limits:
+        cpu: 200m
+        memory: 200Mi
+      requests:
+        cpu: 100m
+        memory: 100Mi
+- kind: ImageStream
+  apiVersion: v1
+  metadata:
+    name: ${APPLICATION_NAME}
+    labels:
+      app: ${APPLICATION_NAME}
+  spec:
+    dockerImageRepository: ''
+    tags:
+    - name: latest
+parameters:
+- name: APPLICATION_NAME
+  description: The name for the application.
+  displayName: Application name
+  required: true
+- name: LOGGING_CONFIG
+  displayName: Logging Config path
+  description: path to logback-spring.xml file
+  value:
+- name: READINESS_PROBE_PATH
+  displayName: Readiness Probe path
+  description: Path for container readiness check. Should usually be /health
+  value: "/clients"
+- name: LIVELINESS_PROBE_PATH
+  displayName: Liveliness Probe path
+  description: Path for container liveliness check. This should usually be /ping
+  value: "/clients"
+- name: LOGGING_LEVEL_ROOT
+  displayName: Root Logging Level
+  description: Logging level to pass to log config file
+  value: "INFO"
+- name: SPRING_PROFILES_ACTIVE
+  description: Active Spring Profiles. This can be used to switch configuration values
+  displayName: Active Spring Profiles
+  required: false
+  value: "kubernetes"
+- name: CPU_REQUEST
+  description: The amount of CPU to request for the pod.
+  displayName: CPU Request
+  value: "200m"
+  required: true
+- name: CPU_LIMIT
+  description: The CPU limit for the pod.
+  displayName: CPU Limit
+  value: "400m"
+  required: true
+- name: MEMORY_REQUEST
+  description: The amount of memory to request for the pod.
+  displayName: Memory Request
+  value: "200Mi"
+  required: true
+- name: MEMORY_LIMIT
+  description: The memory limit for the pod.
+  displayName: Memory Limit
+  value: "400Mi"
+  required: true

@@ -1,0 +1,23 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  labels:
+    group: main
+    feature: sample-jdg-app
+    app: sample-jdg-app
+  name: sample-jdg-app
+data:
+  application.yml: |-
+    mplat:
+      reference:
+        greeting: Embedded Greeting
+    ---
+    spring:
+       profiles: kubernetes
+    dsf:
+      cache:
+        host: datagrid-service-app
+        port: 11333
+    mplat:
+      reference:
+        greeting: Kubernetes Greeting

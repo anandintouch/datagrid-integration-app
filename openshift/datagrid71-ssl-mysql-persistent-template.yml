@@ -1,0 +1,466 @@
+apiVersion: v1
+kind: Template
+labels:
+  template: mplat-datagrid71-ssl
+  xpaas: 1.2.0
+metadata:
+  annotations:
+    description: FIS Mobile Platform template for JDG 7.1 applications using SSL.
+    iconClass: icon-jboss
+    tags: fis,mplat,datagrid,jboss,xpaas
+    version: 1.2.0
+  name: mplat-datagrid71-ssl
+objects:
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: The web server's HTTP port.
+      service.alpha.openshift.io/serving-cert-secret-name: ${APPLICATION_NAME}-service-certs
+      service.alpha.openshift.io/dependencies: '[{"name": "${APPLICATION_NAME}-mysql",
+        "kind": "Service"}]'
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    ports:
+    - name: 11333-tcp
+      port: 11333
+      protocol: TCP
+      targetPort: 11333
+    selector:
+      deploymentConfig: ${APPLICATION_NAME}
+    sessionAffinity: None
+    type: ClusterIP
+- apiVersion: v1
+  kind: Service
+  spec:
+    ports:
+    - port: 3306
+      targetPort: 3306
+    selector:
+      deploymentConfig: "${APPLICATION_NAME}-mysql"
+  metadata:
+    name: "${APPLICATION_NAME}-mysql"
+    labels:
+      application: "${APPLICATION_NAME}"
+    annotations:
+      description: The database server's port.
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: datagrid71-openshift
+  spec:
+    tags:
+    - annotations: null
+      from:
+        kind: DockerImage
+        name: registry.access.redhat.com/jboss-datagrid-7/datagrid71-openshift:latest
+      generation: 1
+      importPolicy: {}
+      name: latest
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    replicas: "${{NUM_REPLICAS}}"
+    selector:
+      deploymentConfig: ${APPLICATION_NAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          app: ${APPLICATION_NAME}
+          deploymentConfig: ${APPLICATION_NAME}
+        name: ${APPLICATION_NAME}
+      spec:
+        containers:
+        - envFrom:
+          - configMapRef:
+              name: mplat-system-datagrid
+          env:
+          - name: USERNAME
+            valueFrom:
+                secretKeyRef:
+                  name: ${DATAGRID_APP_SECRET}
+                  key: username
+          - name: PASSWORD
+            valueFrom:
+                secretKeyRef:
+                  name: ${DATAGRID_APP_SECRET}
+                  key: password
+          - name: HTTPS_KEYSTORE_DIR
+            value: /var/run/secrets/java.io/keystores
+          - name: HTTPS_KEYSTORE
+            value: ${HTTPS_KEYSTORE}
+          - name: HTTPS_NAME
+            value: ${HTTPS_NAME}
+          - name: HTTPS_PASSWORD
+            valueFrom:
+                secretKeyRef:
+                  name: ${DATAGRID_APP_SECRET}
+                  key: keystore_password
+          - name: OPENSHIFT_KUBE_PING_LABELS
+            value: application=${APPLICATION_NAME}
+          - name: OPENSHIFT_KUBE_PING_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: INFINISPAN_CONNECTORS
+            value: ${INFINISPAN_CONNECTORS}
+          - name: HOTROD_ENCRYPTION
+            value: ${HOTROD_ENCRYPTION}
+          - name: ENCRYPTION_REQUIRE_SSL_CLIENT_AUTH
+            value: ${ENCRYPTION_REQUIRE_SSL_CLIENT_AUTH}
+          - name: HOTROD_SERVICE_NAME
+            value: ${APPLICATION_NAME}
+          - name: REST_SECURITY_DOMAIN
+            value: ${REST_SECURITY_DOMAIN}
+          - name: JGROUPS_ENCRYPT_KEYSTORE
+            value: ${JGROUPS_ENCRYPT_KEYSTORE}
+          - name: JGROUPS_ENCRYPT_KEYSTORE_DIR
+            value: /var/run/secrets/java.io/keystores
+          - name: JGROUPS_ENCRYPT_NAME
+            value: ${JGROUPS_ENCRYPT_NAME}
+          - name: JGROUPS_ENCRYPT_PASSWORD
+            valueFrom:
+                secretKeyRef:
+                  name: ${DATAGRID_APP_SECRET}
+                  key: keystore_password
+          - name: JGROUPS_CLUSTER_PASSWORD
+            value: ${JGROUPS_CLUSTER_PASSWORD}
+    # DB mapping entry
+          - name: DB_SERVICE_PREFIX_MAPPING
+            value: "${APPLICATION_NAME}-mysql=DB"
+          - name: DB_JNDI
+            value: "${DB_JNDI}"
+          - name: DB_USERNAME
+            value: "${DB_USERNAME}"
+          - name: DB_PASSWORD
+            value: "${DB_PASSWORD}"
+          - name: DB_DATABASE
+            value: "${DB_DATABASE}"
+          - name: TX_DATABASE_PREFIX_MAPPING
+            value: "${APPLICATION_NAME}-mysql=DB"
+          - name: DB_MIN_POOL_SIZE
+            value: "${DB_MIN_POOL_SIZE}"
+          - name: DB_MAX_POOL_SIZE
+            value: "${DB_MAX_POOL_SIZE}"
+          - name: DB_TX_ISOLATION
+            value: "${DB_TX_ISOLATION}"
+          - name: DEFAULT_JDBC_STORE_TYPE
+            value: string
+          - name: DEFAULT_JDBC_STORE_DATASOURCE
+            value: "${DB_JNDI}"
+          - name: MEMCACHED_JDBC_STORE_TYPE
+            value: string
+          - name: MEMCACHED_JDBC_STORE_DATASOURCE
+            value: "${DB_JNDI}"
+    # DB mapping entry ends
+          image: datagrid71-openshift
+          imagePullPolicy: Always
+          livenessProbe:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - /opt/datagrid/bin/livenessProbe.sh
+          name: ${APPLICATION_NAME}
+          ports:
+          - containerPort: 8778
+            name: jolokia
+            protocol: TCP
+          - name: hotrod-internal
+            containerPort: 11222
+            protocol: TCP
+          - name: hotrod
+            containerPort: 11333
+            protocol: TCP
+          resources:
+            requests:
+              cpu: ${CPU_REQUEST}
+              memory: ${MEMORY_REQUEST}
+            limits:
+              cpu: ${CPU_LIMIT}
+              memory: ${MEMORY_LIMIT}
+          readinessProbe:
+            exec:
+              command:
+              - /bin/bash
+              - -c
+              - /opt/datagrid/bin/readinessProbe.sh
+            readOnly: true
+          volumeMounts:
+            - name: keystore-volume
+              mountPath: /var/run/secrets/java.io/keystores
+        initContainers: 
+        - name: pem-to-keystore
+          image: registry.access.redhat.com/redhat-sso-7/sso71-openshift:1.1-16
+          env:
+            - name: keyfile
+              value: /var/run/secrets/openshift.io/services_serving_certs/tls.key
+            - name: crtfile
+              value: /var/run/secrets/openshift.io/services_serving_certs/tls.crt
+            - name: keystore_pkcs12
+              value: /var/run/secrets/java.io/keystores/keystore.pkcs12
+            - name: keystore_jks
+              value: /var/run/secrets/java.io/keystores/keystore.jks
+            - name: jgroups_jks
+              value: /var/run/secrets/java.io/keystores/jgroups.jceks
+            - name: password
+              valueFrom:
+                secretKeyRef:
+                  name: ${DATAGRID_APP_SECRET}
+                  key: keystore_password
+          command: ['/bin/bash']
+          args: ['-c', "openssl pkcs12 -export -inkey $keyfile -in $crtfile -out $keystore_pkcs12 -password pass:$password && keytool -importkeystore -noprompt -srckeystore $keystore_pkcs12 -srcstoretype pkcs12 -destkeystore $keystore_jks -storepass $password -srcstorepass $password && keytool -genseckey -alias jgroups -keypass $password -storepass $password -keyalg Blowfish -keysize 56 -keystore $jgroups_jks -storetype JCEKS"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 100Mi
+            limits:
+              cpu: 50m
+              memory: 500Mi
+          volumeMounts:
+            - name: keystore-volume
+              mountPath: /var/run/secrets/java.io/keystores
+            - name: service-certs
+              mountPath: /var/run/secrets/openshift.io/services_serving_certs
+        serviceAccountName: datagrid-service-account
+        terminationGracePeriodSeconds: 60
+        volumes:
+        - name: keystore-volume
+          emtpyDir: {}
+        - name: service-certs
+          secret:
+            secretName: ${APPLICATION_NAME}-service-certs   
+    triggers:
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - ${APPLICATION_NAME}
+        from:
+          kind: ImageStreamTag
+          name: datagrid71-openshift:latest
+      type: ImageChange
+    - type: ConfigChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: "${APPLICATION_NAME}-mysql"
+    labels:
+      application: "${APPLICATION_NAME}"
+  spec:
+    strategy:
+      type: Recreate
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - "${APPLICATION_NAME}-mysql"
+        from:
+          kind: ImageStreamTag
+          namespace: "${IMAGE_STREAM_NAMESPACE}"
+          name: mysql:${MYSQL_IMAGE_STREAM_TAG}
+    - type: ConfigChange
+    replicas: 1
+    selector:
+      deploymentConfig: "${APPLICATION_NAME}-mysql"
+    template:
+      metadata:
+        name: "${APPLICATION_NAME}-mysql"
+        labels:
+          deploymentConfig: "${APPLICATION_NAME}-mysql"
+          application: "${APPLICATION_NAME}"
+      spec:
+        containers:
+        - name: "${APPLICATION_NAME}-mysql"
+          image: mysql
+          imagePullPolicy: Always
+          ports:
+          - containerPort: 3306
+            protocol: TCP
+          volumeMounts:
+          - mountPath: "/var/lib/mysql/data"
+            name: "${APPLICATION_NAME}-mysql-pvol"
+          env:
+          - name: MYSQL_USER
+            value: "${DB_USERNAME}"
+          - name: MYSQL_PASSWORD
+            value: "${DB_PASSWORD}"
+          - name: MYSQL_DATABASE
+            value: "${DB_DATABASE}"
+          - name: MYSQL_LOWER_CASE_TABLE_NAMES
+            value: "${MYSQL_LOWER_CASE_TABLE_NAMES}"
+          - name: MYSQL_MAX_CONNECTIONS
+            value: "${MYSQL_MAX_CONNECTIONS}"
+          - name: MYSQL_FT_MIN_WORD_LEN
+            value: "${MYSQL_FT_MIN_WORD_LEN}"
+          - name: MYSQL_FT_MAX_WORD_LEN
+            value: "${MYSQL_FT_MAX_WORD_LEN}"
+          - name: MYSQL_AIO
+            value: "${MYSQL_AIO}"
+        volumes:
+        - name: "${APPLICATION_NAME}-mysql-pvol"
+          persistentVolumeClaim:
+            claimName: "${APPLICATION_NAME}-ssl-mysql-claim"
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${DATAGRID_SERVICE_ACCOUNT}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: "${APPLICATION_NAME}-ssl-mysql-claim"
+    labels:
+      application: "${APPLICATION_NAME}"
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: "${VOLUME_CAPACITY}"
+parameters:
+- description: The name for the application.
+  name: APPLICATION_NAME
+  required: true
+  value: datagrid-app
+- name: DATAGRID_SERVICE_ACCOUNT
+  description: DataGrid Service Account
+  required: true
+  value: datagrid-service-account
+- name: DATAGRID_APP_SECRET
+  description: DATAGRID Secret
+  required: true
+  value: datagrid-app-secret
+- name: INFINISPAN_CONNECTORS
+  description: Comma-separated list of connector types that should be configured)
+  value: hotrod,rest
+- name: HOTROD_ENCRYPTION
+  value: 'true'
+- name: ENCRYPTION_REQUIRE_SSL_CLIENT_AUTH
+  value: 'false'
+- name: HTTPS_KEYSTORE
+  description: The name of the keystore file within the secret
+  value: keystore.jks
+- name: HTTPS_NAME
+  description: The name associated with the server certificate
+- name: JGROUPS_ENCRYPT_KEYSTORE
+  description: The name of the keystore file within the secret
+  value: jgroups.jceks
+- name: JGROUPS_ENCRYPT_NAME
+  description: The name associated with the server certificate
+- name: REST_SECURITY_DOMAIN
+  description: The domain, declared in the security subsystem, that should be used
+    to authenticate access to the REST endpoint
+- name: JGROUPS_CLUSTER_PASSWORD
+  description: JGroups cluster password
+  from: '[a-zA-Z0-9]{8}'
+  generate: expression
+  required: true
+- name: NUM_REPLICAS
+  description: Number of pod replicas
+  value: "1"
+- name: CPU_REQUEST
+  description: The amount of CPU to request for the pod.
+  displayName: CPU Request
+  value: 100m
+  required: true
+- name: CPU_LIMIT
+  description: The CPU limit for the pod.
+  displayName: CPU Limit
+  value: 500m
+  required: true
+- name: MEMORY_REQUEST
+  description: The amount of memory to request for the pod.
+  displayName: Memory Request
+  value: 500Mi
+  required: true
+- name: MEMORY_LIMIT
+  description: The memory limit for the pod.
+  displayName: Memory Limit
+  value: 500Mi
+  required: true
+- name: VOLUME_CAPACITY
+  displayName: Database Volume Capacity
+  description: Size of persistent storage for database volume.
+  value: 1Gi
+  required: true
+- name: DB_JNDI
+  displayName: Database JNDI Name
+  description: Database JNDI name used by application to resolve the datasource, e.g. java:/jboss/datasources/mysql
+  value: java:/jboss/datasources/mysql
+  required: false
+- displayName: Database Username
+  description: Database user name
+  name: DB_USERNAME
+  from: user[a-zA-Z0-9]{3}
+  generate: expression
+  required: true
+- displayName: Database Password
+  description: Database user password
+  name: DB_PASSWORD
+  from: "[a-zA-Z0-9]{8}"
+  generate: expression
+  required: true
+- displayName: Database Name
+  description: Database name
+  name: DB_DATABASE
+  value: mplat_clients
+  required: true
+- displayName: Datasource Minimum Pool Size
+  description: Sets xa-pool/min-pool-size for the configured datasource.
+  name: DB_MIN_POOL_SIZE
+  required: false
+- displayName: Datasource Maximum Pool Size
+  description: Sets xa-pool/max-pool-size for the configured datasource.
+  name: DB_MAX_POOL_SIZE
+  required: false
+- displayName: Datasource Transaction Isolation
+  description: Sets transaction-isolation for the configured datasource.
+  name: DB_TX_ISOLATION
+  required: false
+- displayName: ImageStream Namespace
+  description: Namespace in which the ImageStreams for Red Hat Middleware images are
+    installed. These ImageStreams are normally installed in the openshift namespace.
+    You should only need to modify this if you've installed the ImageStreams in a
+    different namespace/project.
+  name: IMAGE_STREAM_NAMESPACE
+  value: openshift
+  required: true
+- displayName: MySQL Image Stream Tag
+  description: The tag to use for the "mysql" image stream.  Typically, this aligns
+    with the major.minor version of MySQL.
+  name: MYSQL_IMAGE_STREAM_TAG
+  value: '5.7'
+  required: true
+- displayName: MySQL AIO
+  description: Controls the innodb_use_native_aio setting value if the native AIO
+    is broken.
+  name: MYSQL_AIO
+  required: false
+- displayName: MySQL Lower Case Table Names
+  description: Sets how the table names are stored and compared.
+  name: MYSQL_LOWER_CASE_TABLE_NAMES
+  required: false
+- displayName: MySQL Maximum number of connections
+  description: The maximum permitted number of simultaneous client connections.
+  name: MYSQL_MAX_CONNECTIONS
+  required: false
+- displayName: MySQL FullText Minimum Word Length
+  description: The minimum length of the word to be included in a FULLTEXT index.
+  name: MYSQL_FT_MIN_WORD_LEN
+  required: false
+- displayName: MySQL FullText Maximum Word Length
+  description: The maximum length of the word to be included in a FULLTEXT index.
+  name: MYSQL_FT_MAX_WORD_LEN
+  required: false
